@@ -165,7 +165,15 @@ with tab1:
 
     with col2:
         st.write("#### Cluster Profiles")
-        features_for_profile = ['Sleep Duration', 'Quality of Sleep', 'Stress Level', 'Heart Rate', 'Physical Activity Level']
+        features_for_profile = [
+            'Sleep Duration',
+            'Quality of Sleep',
+            'Stress Level',
+            'Heart Rate',
+            'Physical Activity Level',
+            'Daily Steps',
+            'Age'
+            ]
         profile = filtered_df.groupby('Behavioral_Cluster')[features_for_profile].mean().round(2)
         profile.index = [f"Cluster {i}" for i in profile.index]
         st.dataframe(profile, use_container_width=True)
@@ -178,16 +186,129 @@ with tab1:
         st.plotly_chart(fig_pie, use_container_width=True)
 
     
+    # ========================
+    # Cluster Meaning Section
+    # ========================
+    st.markdown("### 🧬 Understanding the Behavioral Clusters")
 
+    # Dynamically compute actual cluster stats to show real numbers
+    cluster_stats = filtered_df.groupby('Behavioral_Cluster')[
+        ['Sleep Duration', 'Stress Level', 'Heart Rate', 'Quality of Sleep', 'Physical Activity Level']
+    ].mean().round(1)
 
+    cluster_configs = {
+        0: {
+            "title": "Cluster 0 — Optimal Sleep",
+            "emoji": "🟢",
+            "color": "#0d2b1a",
+            "border": "#2d6a4f",
+            "badge_bg": "#1a4731",
+            "badge_text": "#52b788",
+            "tag": "HEALTHY",
+            "desc": "This group maintains consistent, restorative sleep with low physiological stress markers. They represent the target health baseline.",
+        },
+        1: {
+            "title": "Cluster 1 — Moderate Risk",
+            "emoji": "🟡",
+            "color": "#2b2200",
+            "border": "#b58900",
+            "badge_bg": "#3d3000",
+            "badge_text": "#f4c430",
+            "tag": "MONITOR",
+            "desc": "This group shows early signs of sleep disruption. Without intervention, they may deteriorate into the high-risk category.",
+        },
+        2: {
+            "title": "Cluster 2 — High Risk",
+            "emoji": "🔴",
+            "color": "#2b0a0a",
+            "border": "#c0392b",
+            "badge_bg": "#3d1010",
+            "badge_text": "#e74c3c",
+            "tag": "CRITICAL",
+            "desc": "This group displays compounding risk factors. High stress, poor sleep, and elevated heart rate together significantly increase disorder probability.",
+        },
+    }
+
+    cluster_labels = {
+        0: ["Low Stress", "Normal HR", "Restorative Sleep", "Active Lifestyle"],
+        1: ["Moderate Stress", "Mild HR Elevation", "Fragmented Sleep", "Reduced Activity"],
+        2: ["High Stress", "Elevated HR", "Severe Sleep Deficit", "Sedentary Pattern"],
+    }
+
+    cols = st.columns(3)
+
+    for idx, col in enumerate(cols):
+        cfg = cluster_configs[idx]
+        stats = cluster_stats.loc[idx] if idx in cluster_stats.index else None
+        tags = cluster_labels[idx]
+
+        with col:
+            st.markdown(f"""
+            <div style="
+                background: {cfg['color']};
+                border: 1.5px solid {cfg['border']};
+                border-radius: 14px;
+                padding: 20px 18px 16px 18px;
+                height: 100%;
+                font-family: Arial, sans-serif;
+            ">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <span style="font-size:22px;">{cfg['emoji']}</span>
+                    <span style="
+                        background:{cfg['badge_bg']};
+                        color:{cfg['badge_text']};
+                        font-size:11px;
+                        font-weight:700;
+                        letter-spacing:1.5px;
+                        padding:3px 10px;
+                        border-radius:20px;
+                        border: 1px solid {cfg['border']};
+                    ">{cfg['tag']}</span>
+                </div>
+                <div style="font-size:15px; font-weight:700; color:#e0e0e0; margin-bottom:8px;">
+                    {cfg['title']}
+                </div>
+                <div style="font-size:12px; color:#aaaaaa; margin-bottom:14px; line-height:1.5;">
+                    {cfg['desc']}
+                </div>
+                <hr style="border:none; border-top:1px solid {cfg['border']}; margin: 10px 0 12px 0; opacity:0.4;">
+                <div style="display:flex; flex-direction:column; gap:7px; margin-bottom:14px;">
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span style="color:#888888;">😴 Avg Sleep</span>
+                        <span style="color:#e0e0e0; font-weight:600;">{stats['Sleep Duration'] if stats is not None else 'N/A'} hrs</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span style="color:#888888;">😰 Stress Level</span>
+                        <span style="color:#e0e0e0; font-weight:600;">{stats['Stress Level'] if stats is not None else 'N/A'} / 10</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span style="color:#888888;">❤️ Heart Rate</span>
+                        <span style="color:#e0e0e0; font-weight:600;">{stats['Heart Rate'] if stats is not None else 'N/A'} bpm</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span style="color:#888888;">⭐ Sleep Quality</span>
+                        <span style="color:#e0e0e0; font-weight:600;">{stats['Quality of Sleep'] if stats is not None else 'N/A'} / 10</span>
+                    </div>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:5px;">
+                    {"".join([f'<span style="background:{cfg["badge_bg"]}; color:{cfg["badge_text"]}; font-size:10px; padding:3px 8px; border-radius:10px; border:1px solid {cfg["border"]};">{t}</span>' for t in tags])}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
 # ========================
 # TAB 2 — EARLY WARNINGS
 # ========================
 with tab2:
     st.subheader("🚨 Deterioration Detection Log")
 
+   
+
     col_a, col_b = st.columns([1, 2])
+
     with col_a:
+        # --- GAUGE ---
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number+delta",
             value=filtered_df['Risk_Score'].mean(),
@@ -197,43 +318,83 @@ with tab2:
                 'axis': {'range': [0, 100], 'tickwidth': 1},
                 'bar': {'color': "#e63946"},
                 'steps': [
-                    {'range': [0, 40], 'color': '#2d6a4f'},
-                    {'range': [40, 65], 'color': '#f4a261'},
-                    {'range': [65, 100], 'color': '#e63946'}
+                    {'range': [0, 45],  'color': '#2d6a4f'},
+                    {'range': [45, 65], 'color': '#f4a261'},
+                    {'range': [65, 100],'color': '#e63946'}
                 ],
-                'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': 60}
+                'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': 65}
             }))
         fig_gauge.update_layout(height=300)
         st.plotly_chart(fig_gauge, use_container_width=True)
 
-        # Warning distribution
+        # --- WARNING DISTRIBUTION BAR ---
         warn_counts = filtered_df['Early_Warning'].value_counts().reset_index()
         warn_counts.columns = ['Status', 'Count']
-        fig_warn = px.bar(warn_counts, x='Status', y='Count', color='Status',
-                          color_discrete_map={
-                              "🚨 CRITICAL DETERIORATION": "#e63946",
-                              "⚠️ MONITORING": "#f4a261",
-                              "✅ STABLE": "#2d6a4f"
-                          }, title="Warning Status Distribution")
+        fig_warn = px.bar(
+            warn_counts, x='Status', y='Count', color='Status',
+            color_discrete_map={
+                "🚨 CRITICAL DETERIORATION": "#e63946",
+                "⚠️ MONITORING":             "#f4a261",
+                "✅ STABLE":                 "#2d6a4f"
+            },
+            text='Count',
+            title="Warning Status Distribution"
+        )
+        fig_warn.update_traces(textposition='outside')
+        fig_warn.update_layout(showlegend=False, xaxis_title="", yaxis_title="Count")
         st.plotly_chart(fig_warn, use_container_width=True)
 
     with col_b:
-        at_risk = filtered_df[filtered_df['Early_Warning'] != "✅ STABLE"]
-        st.write(f"**{len(at_risk)} persons flagged for monitoring or critical alert**")
-        display_cols = ['Person ID', 'Occupation', 'Age', 'Early_Warning', 'Risk_Score', 'Stress Level', 'Sleep Duration']
-        st.dataframe(at_risk[display_cols].sort_values('Risk_Score', ascending=False), use_container_width=True, height=400)
+        at_risk = filtered_df[filtered_df['Early_Warning'] != "✅ STABLE"].copy()
 
-    # Risk score distribution
+        # --- CRITICAL vs MONITORING split summary ---
+        n_critical   = len(at_risk[at_risk['Early_Warning'] == "🚨 CRITICAL DETERIORATION"])
+        n_monitoring = len(at_risk[at_risk['Early_Warning'] == "⚠️ MONITORING"])
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("🚨 Critical",   n_critical)
+        mc2.metric("⚠️ Monitoring", n_monitoring)
+        mc3.metric("Total Flagged", len(at_risk))
+
+        st.markdown("""
+        <small style='color:#aaaaaa;'>
+        <b>🚨 CRITICAL</b> = Isolation Forest anomaly <i>AND</i> Risk Score &gt; 65 &nbsp;|&nbsp;
+        <b>⚠️ MONITORING</b> = Risk Score &gt; 45 &nbsp;|&nbsp;
+        <b>✅ STABLE</b> = Risk Score ≤ 45
+        </small>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # --- FLAGGED PERSONS TABLE ---
+        display_cols = ['Person ID', 'Occupation', 'Age', 'Early_Warning',
+                        'Risk_Score', 'Stress Level', 'Sleep Duration', 'Heart Rate']
+
+        st.dataframe(
+            at_risk[display_cols].sort_values('Risk_Score', ascending=False),
+            use_container_width=True,
+            height=380
+        )
+
+    st.divider()
+
+    # --- VIOLIN PLOT ---
     st.write("#### Risk Score Distribution by Occupation")
-    fig_violin = px.violin(filtered_df, x='Occupation', y='Risk_Score', color='Early_Warning',
-                           box=True, title="Risk Score Spread by Occupation",
-                           color_discrete_map={
-                               "🚨 CRITICAL DETERIORATION": "#e63946",
-                               "⚠️ MONITORING": "#f4a261",
-                               "✅ STABLE": "#2d6a4f"
-                           })
+    fig_violin = px.violin(
+        filtered_df, x='Occupation', y='Risk_Score', color='Early_Warning',
+        box=True,
+        title="Risk Score Spread by Occupation",
+        color_discrete_map={
+            "🚨 CRITICAL DETERIORATION": "#e63946",
+            "⚠️ MONITORING":             "#f4a261",
+            "✅ STABLE":                 "#2d6a4f"
+        }
+    )
     fig_violin.update_xaxes(tickangle=45)
+    fig_violin.update_layout(legend_title_text="Warning Status")
     st.plotly_chart(fig_violin, use_container_width=True)
+
+    
 
 
 # ========================
@@ -392,8 +553,12 @@ with tab5:
         quality_pred = reg.predict(input_data)[0]
 
         # Risk Score
-        sleep_debt = max(0, 7.5 - sleep_dur)
-        risk = min(100, (stress * 10) + (sleep_debt * 15) + (heart_rate * 0.5))
+        # In app.py SleepSystem class — replace the Risk_Score lines with:
+        hr_excess = (self.df['Heart Rate'] - 65).clip(lower=0)
+        hr_score  = (hr_excess / 25) * 20
+        stress_score = (self.df['Stress Level'] / 10) * 40
+        sleep_score  = (self.df['Sleep_Debt'] / 3.5) * 40
+        self.df['Risk_Score'] = (stress_score + sleep_score + hr_score).clip(0, 100).round(1)
 
         # Display results
         st.divider()
