@@ -104,7 +104,7 @@ def train_models(df):
 
 
 # --- MAIN APP ---
-st.title("🌙 SleepGuard Pro — Sleep Health Analytics & Prediction System")
+st.title("🌙 SleepGuard— Sleep Health Analytics & Prediction System")
 
 CSV_NAME = 'Sleep_health_and_lifestyle_dataset.csv'
 
