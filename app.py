@@ -126,7 +126,7 @@ with st.sidebar:
                                    default=df['Gender'].unique().tolist())
     st.divider()
     st.caption(f"📐 K-Means Silhouette Score: **{sil_score:.3f}**")
-    st.caption("Higher = better-defined clusters (0–1 scale)")
+    
 
 filtered_df = df[df['Occupation'].isin(occ_list) & df['Gender'].isin(gender_filter)]
 
@@ -554,12 +554,13 @@ with tab5:
 
         # Risk Score
         # In app.py SleepSystem class — replace the Risk_Score lines with:
-        hr_excess = (self.df['Heart Rate'] - 65).clip(lower=0)
-        hr_score  = (hr_excess / 25) * 20
-        stress_score = (self.df['Stress Level'] / 10) * 40
-        sleep_score  = (self.df['Sleep_Debt'] / 3.5) * 40
-        self.df['Risk_Score'] = (stress_score + sleep_score + hr_score).clip(0, 100).round(1)
-
+        # Risk Score
+        sleep_debt   = max(0, 7.5 - sleep_dur)
+        hr_excess    = max(0, heart_rate - 65)
+        hr_score     = (hr_excess / 25) * 20
+        stress_score = (stress / 10) * 40
+        sleep_score  = (sleep_debt / 3.5) * 40
+        risk         = round(min(100, stress_score + sleep_score + hr_score), 1)
         # Display results
         st.divider()
         st.write("### 📋 Prediction Results")

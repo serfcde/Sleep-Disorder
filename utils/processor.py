@@ -24,6 +24,12 @@ class SleepAnalytics:
         bmi_map = {'Normal': 0, 'Normal Weight': 0, 'Overweight': 1, 'Obese': 2}
         self.df['BMI_Score'] = self.df['BMI Category'].map(bmi_map)
 
+        # 5. Robust Normalization to Handle Outliers
+        scaler = RobustScaler()
+        numerical_cols = ['Sleep Duration', 'Stress Level', 'Heart Rate', 'Systolic', 'Diastolic', 'Pulse_Pressure',
+                           'Cardiac_Stress_Index', 'Sleep_Debt', 'BMI_Score']
+        self.df[numerical_cols] = scaler.fit_transform(self.df[numerical_cols])
+
         return self.df
 
     def detect_early_warnings(self):
