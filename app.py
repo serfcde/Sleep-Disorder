@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.ensemble import IsolationForest, RandomForestClassifier, RandomForestRegressor
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score, train_test_split
 from sklearn.metrics import balanced_accuracy_score, mean_absolute_error, silhouette_score
 import os
@@ -145,14 +145,8 @@ class SleepSystem:
             'Sleep Duration', 'Quality of Sleep', 'Stress Level',
             'Heart Rate', 'Physical Activity Level', 'Daily Steps', 'Age'
         ]
-
-        # Use RobustScaler instead of StandardScaler to handle outliers better
-        scaler = RobustScaler()
+        scaler = StandardScaler()
         X = scaler.fit_transform(self.df[features])
-
-        # Store scaled features for visualization
-        scaled_feature_names = [f'{feat}_scaled' for feat in features]
-        self.df[scaled_feature_names] = X
 
         k_scores = {}
         max_k = min(6, len(self.df) - 1)
@@ -322,7 +316,7 @@ with st.sidebar:
                                    default=df['Gender'].unique().tolist())
     st.divider()
     st.caption(f"📐 K-Means k={best_k} | Silhouette Score: **{sil_score:.3f}**")
-    st.caption("🔄 **Robust normalization** applied for outlier-resistant clustering")
+    st.caption(f"🧹 Clean records used: **{len(df)}** / raw rows: **{len(raw_data)}**")
     
 
 filtered_df = df[df['Occupation'].isin(occ_list) & df['Gender'].isin(gender_filter)]
@@ -354,31 +348,10 @@ with tab1:
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        # Add normalization option for 3D visualization
-        normalize_3d = st.checkbox("Normalize axes for better outlier handling", value=True,
-                                  help="Use scaled values to reduce outlier impact on visualization")
-
-        if normalize_3d:
-            x_col, y_col, z_col = 'Sleep Duration_scaled', 'Stress Level_scaled', 'Heart Rate_scaled'
-            x_title, y_title, z_title = 'Sleep Duration (normalized)', 'Stress Level (normalized)', 'Heart Rate (normalized)'
-        else:
-            x_col, y_col, z_col = 'Sleep Duration', 'Stress Level', 'Heart Rate'
-            x_title, y_title, z_title = 'Sleep Duration (hrs)', 'Stress Level', 'Heart Rate (bpm)'
-
-        fig_3d = px.scatter_3d(filtered_df, x=x_col, y=y_col, z=z_col,
-                               color='Behavioral_Cluster',
-                               hover_data=['Occupation', 'Quality of Sleep', 'Sleep Duration', 'Stress Level', 'Heart Rate'],
-                               title=f"3D Behavioral Habitat Mapping ({'Normalized' if normalize_3d else 'Raw'} Scale)",
+        fig_3d = px.scatter_3d(filtered_df, x='Sleep Duration', y='Stress Level', z='Heart Rate',
+                               color='Behavioral_Cluster', hover_data=['Occupation', 'Quality of Sleep'],
+                               title="3D Behavioral Habitat Mapping",
                                color_continuous_scale='Viridis', height=550)
-
-        # Update axis labels
-        fig_3d.update_layout(
-            scene=dict(
-                xaxis_title=x_title,
-                yaxis_title=y_title,
-                zaxis_title=z_title
-            )
-        )
         st.plotly_chart(fig_3d, use_container_width=True)
 
     with col2:
@@ -395,18 +368,6 @@ with tab1:
         profile = filtered_df.groupby('Behavioral_Cluster')[features_for_profile].mean().round(2)
         profile.index = [f"Cluster {i}" for i in profile.index]
         st.dataframe(profile, use_container_width=True)
-
-        # Add scaled feature summary for reference
-        st.write("#### Feature Scaling Summary")
-        scale_info = pd.DataFrame({
-            'Feature': features_for_profile,
-            'Mean': filtered_df[features_for_profile].mean().round(2),
-            'Std': filtered_df[features_for_profile].std().round(2),
-            'Min': filtered_df[features_for_profile].min().round(2),
-            'Max': filtered_df[features_for_profile].max().round(2)
-        })
-        st.dataframe(scale_info, use_container_width=True)
-        st.caption("*RobustScaler used: median-centered, IQR-normalized for outlier resistance*")
 
         st.write("#### Cluster Size Distribution")
         cluster_counts = filtered_df['Behavioral_Cluster'].value_counts().reset_index()
