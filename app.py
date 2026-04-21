@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 from sklearn.ensemble import IsolationForest, RandomForestClassifier, RandomForestRegressor
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, mean_absolute_error, silhouette_score
+from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score, train_test_split
+from sklearn.metrics import balanced_accuracy_score, mean_absolute_error, silhouette_score
 import os
 
 # --- PAGE CONFIG ---
@@ -25,82 +25,177 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# --- DATA CLEANING HELPERS ---
+def clean_sleep_data(data):
+    """Clean raw sleep records while preserving human-readable dashboard columns."""
+    df = data.copy()
+    df.columns = df.columns.str.strip()
+    df = df.dropna(how='all')
+
+    text_cols = df.select_dtypes(include='object').columns
+    for col in text_cols:
+        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].replace({'': np.nan, 'nan': np.nan, 'None': 'None'})
+
+    if 'Sleep Disorder' in df.columns:
+        df['Sleep Disorder'] = df['Sleep Disorder'].fillna('None')
+
+    if 'BMI Category' in df.columns:
+        df['BMI Category'] = df['BMI Category'].replace({
+            'Normal': 'Normal Weight',
+            'Normal Weight': 'Normal Weight'
+        })
+
+    if 'Blood Pressure' in df.columns:
+        bp = df['Blood Pressure'].astype(str).str.extract(r'(?P<Systolic>\d+)\s*/\s*(?P<Diastolic>\d+)')
+        df['Systolic'] = pd.to_numeric(bp['Systolic'], errors='coerce')
+        df['Diastolic'] = pd.to_numeric(bp['Diastolic'], errors='coerce')
+        df['Pulse_Pressure'] = df['Systolic'] - df['Diastolic']
+
+    numeric_cols = [
+        'Age', 'Sleep Duration', 'Quality of Sleep', 'Physical Activity Level',
+        'Stress Level', 'Heart Rate', 'Daily Steps', 'Systolic', 'Diastolic',
+        'Pulse_Pressure'
+    ]
+    for col in [c for c in numeric_cols if c in df.columns]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = df[col].fillna(df[col].median())
+
+    for col in ['Gender', 'Occupation', 'BMI Category', 'Sleep Disorder']:
+        if col in df.columns and df[col].isna().any():
+            mode = df[col].mode(dropna=True)
+            df[col] = df[col].fillna(mode.iloc[0] if not mode.empty else 'Unknown')
+
+    dedupe_cols = [c for c in df.columns if c != 'Person ID']
+    df = df.drop_duplicates(subset=dedupe_cols).reset_index(drop=True)
+    return df
+
+
+def add_health_features(df):
+    """Create explainable health features and risk bands from unscaled values."""
+    df = df.copy()
+    df['Cardiac_Stress_Index'] = df['Heart Rate'] / df['Sleep Duration'].replace(0, np.nan)
+    df['Cardiac_Stress_Index'] = df['Cardiac_Stress_Index'].replace([np.inf, -np.inf], np.nan)
+    df['Cardiac_Stress_Index'] = df['Cardiac_Stress_Index'].fillna(df['Cardiac_Stress_Index'].median())
+    df['Sleep_Debt'] = (7.5 - df['Sleep Duration']).clip(lower=0)
+
+    bmi_map = {'Normal Weight': 0, 'Overweight': 1, 'Obese': 2}
+    df['BMI_Score'] = df['BMI Category'].map(bmi_map).fillna(0)
+
+    hr_excess = (df['Heart Rate'] - 65).clip(lower=0)
+    hr_score = (hr_excess / 25) * 20
+    stress_score = (df['Stress Level'] / 10) * 40
+    sleep_score = (df['Sleep_Debt'] / 3.5) * 40
+    df['Risk_Score'] = (stress_score + sleep_score + hr_score).clip(0, 100).round(1)
+    return df
+
+
 # --- ANALYTICS ENGINE ---
 class SleepSystem:
     def __init__(self, data):
-        self.df = data.copy()
+        self.df = clean_sleep_data(data)
 
     def process_and_mine(self):
-        if 'Blood Pressure' in self.df.columns:
-            self.df[['Systolic', 'Diastolic']] = self.df['Blood Pressure'].str.split('/', expand=True).astype(int)
-            self.df['Pulse_Pressure'] = self.df['Systolic'] - self.df['Diastolic']
+        self.df = add_health_features(self.df)
 
-        self.df['Cardiac_Stress_Index'] = self.df['Heart Rate'] / self.df['Sleep Duration']
-        self.df['Sleep_Debt'] = self.df['Sleep Duration'].apply(lambda x: max(0, 7.5 - x))
-
-        bmi_map = {'Normal': 0, 'Normal Weight': 0, 'Overweight': 1, 'Obese': 2}
-        self.df['BMI_Score'] = self.df['BMI Category'].map(bmi_map).fillna(0)
-
-        features = ['Sleep Duration', 'Quality of Sleep', 'Stress Level', 'Heart Rate', 'Physical Activity Level']
+        features = [
+            'Sleep Duration', 'Quality of Sleep', 'Stress Level',
+            'Heart Rate', 'Physical Activity Level', 'Daily Steps', 'Age'
+        ]
         scaler = StandardScaler()
         X = scaler.fit_transform(self.df[features])
 
-        kmeans = KMeans(n_clusters=3, n_init=20, max_iter=500, random_state=42)
+        k_scores = {}
+        max_k = min(6, len(self.df) - 1)
+        for k in range(2, max_k + 1):
+            candidate = KMeans(n_clusters=k, n_init=30, max_iter=500, random_state=42)
+            labels = candidate.fit_predict(X)
+            k_scores[k] = silhouette_score(X, labels)
+
+        best_k = max(k_scores, key=k_scores.get) if k_scores else 3
+        kmeans = KMeans(n_clusters=best_k, n_init=30, max_iter=500, random_state=42)
         self.df['Behavioral_Cluster'] = kmeans.fit_predict(X)
         sil_score = silhouette_score(X, self.df['Behavioral_Cluster'])
 
         iso = IsolationForest(n_estimators=100, contamination=0.12, random_state=42)
         self.df['Anomaly_Score'] = iso.fit_predict(X)
 
-        self.df['Risk_Score'] = (
-            (self.df['Stress Level'] * 10) +
-            (self.df['Sleep_Debt'] * 15) +
-            (self.df['Heart Rate'] * 0.5)
-        ).clip(0, 100)
-
         self.df['Early_Warning'] = np.where(
-            (self.df['Anomaly_Score'] == -1) & (self.df['Risk_Score'] > 60),
+            self.df['Risk_Score'] >= 65,
             "🚨 CRITICAL DETERIORATION",
-            np.where(self.df['Risk_Score'] > 40, "⚠️ MONITORING", "✅ STABLE")
+            np.where(self.df['Risk_Score'] >= 45, "⚠️ MONITORING", "✅ STABLE")
         )
-        return self.df, sil_score
+        return self.df, sil_score, best_k
 
 
 # --- ML MODEL TRAINING ---
 @st.cache_resource
 def train_models(df):
-    """Train classification (Sleep Disorder) + regression (Sleep Quality) models"""
-    model_df = df.copy()
+    """Train regularized classification and regression models with leakage controls."""
+    model_df = clean_sleep_data(df)
 
     # Encode categoricals
     le_disorder = LabelEncoder()
     model_df['Sleep Disorder Encoded'] = le_disorder.fit_transform(model_df['Sleep Disorder'].fillna('None'))
 
-    le_gender = LabelEncoder()
-    model_df['Gender_Enc'] = le_gender.fit_transform(model_df['Gender'])
+    raw_features = [
+        'Age', 'Gender', 'Sleep Duration', 'Physical Activity Level',
+        'Stress Level', 'BMI Category', 'Heart Rate', 'Daily Steps',
+        'Systolic', 'Diastolic'
+    ]
+    raw_features = [feature for feature in raw_features if feature in model_df.columns]
 
-    le_bmi = LabelEncoder()
-    model_df['BMI_Enc'] = le_bmi.fit_transform(model_df['BMI Category'])
-
-    features = ['Age', 'Gender_Enc', 'Sleep Duration', 'Physical Activity Level',
-                'Stress Level', 'BMI_Enc', 'Heart Rate', 'Daily Steps']
-
-    X = model_df[features].dropna()
+    X_raw = model_df[raw_features].dropna()
+    X = pd.get_dummies(X_raw, columns=['Gender', 'BMI Category'], dtype=int)
     y_class = model_df.loc[X.index, 'Sleep Disorder Encoded']
     y_reg = model_df.loc[X.index, 'Quality of Sleep']
 
-    X_train, X_test, y_c_train, y_c_test = train_test_split(X, y_class, test_size=0.2, random_state=42)
-    _, _, y_r_train, y_r_test = train_test_split(X, y_reg, test_size=0.2, random_state=42)
+    X_train, X_test, y_c_train, y_c_test, y_r_train, y_r_test = train_test_split(
+        X, y_class, y_reg, test_size=0.25, random_state=42, stratify=y_class
+    )
 
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=5,
+        min_samples_split=10,
+        min_samples_leaf=5,
+        max_features='sqrt',
+        class_weight='balanced',
+        random_state=42
+    )
     clf.fit(X_train, y_c_train)
-    clf_acc = clf.score(X_test, y_c_test)
+    clf_train_acc = balanced_accuracy_score(y_c_train, clf.predict(X_train))
+    clf_test_acc = balanced_accuracy_score(y_c_test, clf.predict(X_test))
 
-    reg = RandomForestRegressor(n_estimators=100, random_state=42)
+    reg = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=5,
+        min_samples_split=10,
+        min_samples_leaf=5,
+        max_features=0.8,
+        random_state=42
+    )
     reg.fit(X_train, y_r_train)
+    reg_train_mae = mean_absolute_error(y_r_train, reg.predict(X_train))
     reg_mae = mean_absolute_error(y_r_test, reg.predict(X_test))
 
-    return clf, reg, le_disorder, le_gender, le_bmi, features, clf_acc, reg_mae
+    class_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    reg_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    clf_cv = cross_val_score(clf, X, y_class, cv=class_cv, scoring='balanced_accuracy').mean()
+    reg_cv_mae = -cross_val_score(reg, X, y_reg, cv=reg_cv, scoring='neg_mean_absolute_error').mean()
+
+    metrics = {
+        'clf_train_acc': clf_train_acc,
+        'clf_test_acc': clf_test_acc,
+        'clf_cv': clf_cv,
+        'clf_gap': clf_train_acc - clf_test_acc,
+        'reg_train_mae': reg_train_mae,
+        'reg_test_mae': reg_mae,
+        'reg_cv_mae': reg_cv_mae,
+        'reg_gap': reg_mae - reg_train_mae,
+    }
+
+    return clf, reg, le_disorder, raw_features, X.columns.tolist(), metrics
 
 
 # --- MAIN APP ---
@@ -114,7 +209,7 @@ if not os.path.exists(CSV_NAME):
 
 raw_data = pd.read_csv(CSV_NAME)
 engine = SleepSystem(raw_data)
-df, sil_score = engine.process_and_mine()
+df, sil_score, best_k = engine.process_and_mine()
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -125,7 +220,8 @@ with st.sidebar:
     gender_filter = st.multiselect("Filter by Gender", options=df['Gender'].unique().tolist(),
                                    default=df['Gender'].unique().tolist())
     st.divider()
-    st.caption(f"📐 K-Means Silhouette Score: **{sil_score:.3f}**")
+    st.caption(f"📐 K-Means k={best_k} | Silhouette Score: **{sil_score:.3f}**")
+    st.caption(f"🧹 Clean records used: **{len(df)}** / raw rows: **{len(raw_data)}**")
     
 
 filtered_df = df[df['Occupation'].isin(occ_list) & df['Gender'].isin(gender_filter)]
@@ -193,54 +289,69 @@ with tab1:
 
     # Dynamically compute actual cluster stats to show real numbers
     cluster_stats = filtered_df.groupby('Behavioral_Cluster')[
-        ['Sleep Duration', 'Stress Level', 'Heart Rate', 'Quality of Sleep', 'Physical Activity Level']
+        ['Sleep Duration', 'Stress Level', 'Heart Rate', 'Quality of Sleep', 'Physical Activity Level', 'Risk_Score']
     ].mean().round(1)
 
-    cluster_configs = {
-        0: {
-            "title": "Cluster 0 — Optimal Sleep",
+    cluster_styles = [
+        {
+            "role": "Optimal Sleep",
             "emoji": "🟢",
             "color": "#0d2b1a",
             "border": "#2d6a4f",
             "badge_bg": "#1a4731",
             "badge_text": "#52b788",
             "tag": "HEALTHY",
-            "desc": "This group maintains consistent, restorative sleep with low physiological stress markers. They represent the target health baseline.",
+            "desc": "This group maintains stronger sleep quality, lower stress, and healthier recovery signals.",
+            "tags": ["Low Stress", "Restorative Sleep", "Active Lifestyle"],
         },
-        1: {
-            "title": "Cluster 1 — Moderate Risk",
+        {
+            "role": "Watchlist",
             "emoji": "🟡",
             "color": "#2b2200",
             "border": "#b58900",
             "badge_bg": "#3d3000",
             "badge_text": "#f4c430",
             "tag": "MONITOR",
-            "desc": "This group shows early signs of sleep disruption. Without intervention, they may deteriorate into the high-risk category.",
+            "desc": "This group shows early disruption and benefits most from prevention-focused changes.",
+            "tags": ["Moderate Stress", "Reduced Recovery", "Check Habits"],
         },
-        2: {
-            "title": "Cluster 2 — High Risk",
+        {
+            "role": "Elevated Risk",
+            "emoji": "🟠",
+            "color": "#2b1605",
+            "border": "#d9822b",
+            "badge_bg": "#3a2108",
+            "badge_text": "#ffb86b",
+            "tag": "ELEVATED",
+            "desc": "This group combines multiple strain signals and should be monitored closely.",
+            "tags": ["Higher Stress", "Sleep Debt", "Lower Quality"],
+        },
+        {
+            "role": "High Risk",
             "emoji": "🔴",
             "color": "#2b0a0a",
             "border": "#c0392b",
             "badge_bg": "#3d1010",
             "badge_text": "#e74c3c",
             "tag": "CRITICAL",
-            "desc": "This group displays compounding risk factors. High stress, poor sleep, and elevated heart rate together significantly increase disorder probability.",
+            "desc": "This group displays compounding risk factors across stress, sleep, and cardiac signals.",
+            "tags": ["High Stress", "Elevated HR", "Severe Sleep Deficit"],
         },
-    }
+    ]
 
-    cluster_labels = {
-        0: ["Low Stress", "Normal HR", "Restorative Sleep", "Active Lifestyle"],
-        1: ["Moderate Stress", "Mild HR Elevation", "Fragmented Sleep", "Reduced Activity"],
-        2: ["High Stress", "Elevated HR", "Severe Sleep Deficit", "Sedentary Pattern"],
-    }
+    ranked_clusters = (
+        cluster_stats['Risk_Score']
+        .sort_values()
+        .index
+        .tolist()
+    )
+    cols = st.columns(min(len(ranked_clusters), 4))
 
-    cols = st.columns(3)
-
-    for idx, col in enumerate(cols):
-        cfg = cluster_configs[idx]
-        stats = cluster_stats.loc[idx] if idx in cluster_stats.index else None
-        tags = cluster_labels[idx]
+    for rank, cluster_id in enumerate(ranked_clusters):
+        col = cols[rank % len(cols)]
+        cfg = cluster_styles[min(rank, len(cluster_styles) - 1)]
+        stats = cluster_stats.loc[cluster_id]
+        tags = cfg["tags"]
 
         with col:
             st.markdown(f"""
@@ -266,7 +377,7 @@ with tab1:
                     ">{cfg['tag']}</span>
                 </div>
                 <div style="font-size:15px; font-weight:700; color:#e0e0e0; margin-bottom:8px;">
-                    {cfg['title']}
+                    Cluster {cluster_id} — {cfg['role']}
                 </div>
                 <div style="font-size:12px; color:#aaaaaa; margin-bottom:14px; line-height:1.5;">
                     {cfg['desc']}
@@ -358,8 +469,8 @@ with tab2:
 
         st.markdown("""
         <small style='color:#aaaaaa;'>
-        <b>🚨 CRITICAL</b> = Isolation Forest anomaly <i>AND</i> Risk Score &gt; 65 &nbsp;|&nbsp;
-        <b>⚠️ MONITORING</b> = Risk Score &gt; 45 &nbsp;|&nbsp;
+        <b>🚨 CRITICAL</b> = Risk Score ≥ 65 &nbsp;|&nbsp;
+        <b>⚠️ MONITORING</b> = Risk Score ≥ 45 &nbsp;|&nbsp;
         <b>✅ STABLE</b> = Risk Score ≤ 45
         </small>
         """, unsafe_allow_html=True)
@@ -486,23 +597,44 @@ with tab4:
         st.plotly_chart(fig_box, use_container_width=True)
 
     with col_right:
-        st.write("**Correlation Heatmap**")
-        corr_matrix = filtered_df.corr(numeric_only=True)
-        fig_heat = px.imshow(corr_matrix, text_auto=True,
-                             color_continuous_scale='RdBu_r', aspect="auto")
+        st.write("**Focused Correlation Heatmap**")
+        corr_features = [
+            'Sleep Duration', 'Quality of Sleep', 'Stress Level',
+            'Heart Rate', 'Physical Activity Level', 'Daily Steps',
+            'Age', 'Systolic', 'Diastolic', 'Pulse_Pressure',
+            'Cardiac_Stress_Index', 'Sleep_Debt', 'BMI_Score', 'Risk_Score'
+        ]
+        corr_features = [col for col in corr_features if col in filtered_df.columns]
+        corr_matrix = filtered_df[corr_features].corr()
+        fig_heat = px.imshow(
+            corr_matrix,
+            text_auto=".2f",
+            zmin=-1,
+            zmax=1,
+            color_continuous_scale='RdBu_r',
+            aspect="auto"
+        )
         fig_heat.update_layout(margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig_heat, use_container_width=True)
 
     st.divider()
-    st.write("### 🔍 Key Health Correlation Insights")
-    st.info("""
-    **Data Mining Observations:**
-    1. **Stress vs Sleep Duration:** Strong negative correlation — as stress rises, sleep duration falls significantly.
-    2. **Physical Activity → Sleep Quality:** Higher activity levels are associated with measurably better sleep quality scores.
-    3. **Heart Rate & Anomalies:** Elevated resting heart rates are disproportionately linked to 🚨 Critical Early Warning flags.
-    4. **BMI & Sleep Disorders:** Overweight/Obese categories show higher prevalence of Sleep Apnea and Insomnia.
-    5. **Cardiac Stress Index:** Persons with CSI > 10 are most likely to appear in the Anomaly cluster.
-    """)
+    st.write("### 🔍 Strongest Correlation Drivers")
+    target_cols = [col for col in ['Quality of Sleep', 'Sleep Duration', 'Risk_Score'] if col in corr_matrix.columns]
+    insight_cols = st.columns(len(target_cols))
+    for target, insight_col in zip(target_cols, insight_cols):
+        target_corr = (
+            corr_matrix[target]
+            .drop(labels=[target], errors='ignore')
+            .dropna()
+            .sort_values(key=lambda values: values.abs(), ascending=False)
+            .head(5)
+            .reset_index()
+        )
+        target_corr.columns = ['Factor', 'Correlation']
+        target_corr['Correlation'] = target_corr['Correlation'].round(3)
+        with insight_col:
+            st.write(f"**{target}**")
+            st.dataframe(target_corr, hide_index=True, use_container_width=True)
 
 
 # ========================
@@ -514,13 +646,18 @@ with tab5:
 
     # Train models
     with st.spinner("Training models on dataset..."):
-        clf, reg, le_disorder, le_gender, le_bmi, model_features, clf_acc, reg_mae = train_models(df)
+        clf, reg, le_disorder, raw_model_features, encoded_model_features, model_metrics = train_models(df)
 
-    col_acc1, col_acc2 = st.columns(2)
-    col_acc1.metric("🎯 Disorder Classifier Accuracy", f"{clf_acc*100:.1f}%",
-                    help="Random Forest accuracy on 20% held-out test set")
-    col_acc2.metric("📉 Sleep Quality MAE", f"{reg_mae:.2f} pts",
+    col_acc1, col_acc2, col_acc3 = st.columns(3)
+    col_acc1.metric("🎯 Balanced Accuracy", f"{model_metrics['clf_test_acc']*100:.1f}%",
+                    delta=f"CV {model_metrics['clf_cv']*100:.1f}%",
+                    help="Balanced accuracy is better than raw accuracy for imbalanced disorder classes")
+    col_acc2.metric("📉 Sleep Quality MAE", f"{model_metrics['reg_test_mae']:.2f} pts",
+                    delta=f"CV {model_metrics['reg_cv_mae']:.2f} pts",
+                    delta_color="inverse",
                     help="Mean Absolute Error on 1–10 quality scale (lower = better)")
+    col_acc3.metric("🧪 Overfit Gap", f"{model_metrics['clf_gap']*100:.1f}%",
+                    help="Train balanced accuracy minus test balanced accuracy")
 
     st.divider()
     st.write("### Enter New Person's Details")
@@ -539,13 +676,21 @@ with tab5:
         daily_steps = st.slider("Daily Steps", 1000, 20000, 7000, 500)
 
     if st.button("🔮 Predict Sleep Health", type="primary", use_container_width=True):
-        # Encode inputs
-        gender_enc = le_gender.transform([gender])[0] if gender in le_gender.classes_ else 0
-        bmi_enc_val = le_bmi.transform([bmi_cat])[0] if bmi_cat in le_bmi.classes_ else 0
-
-        input_data = pd.DataFrame([[age, gender_enc, sleep_dur, physical_act, stress,
-                                     bmi_enc_val, heart_rate, daily_steps]],
-                                   columns=model_features)
+        input_raw = pd.DataFrame([{
+            'Age': age,
+            'Gender': gender,
+            'Sleep Duration': sleep_dur,
+            'Physical Activity Level': physical_act,
+            'Stress Level': stress,
+            'BMI Category': bmi_cat,
+            'Heart Rate': heart_rate,
+            'Daily Steps': daily_steps,
+            'Systolic': 120,
+            'Diastolic': 80,
+        }])
+        input_raw = input_raw[[col for col in raw_model_features if col in input_raw.columns]]
+        input_data = pd.get_dummies(input_raw, columns=['Gender', 'BMI Category'], dtype=int)
+        input_data = input_data.reindex(columns=encoded_model_features, fill_value=0)
 
         disorder_pred_enc = clf.predict(input_data)[0]
         disorder_pred = le_disorder.inverse_transform([disorder_pred_enc])[0]
@@ -586,7 +731,7 @@ with tab5:
         # Feature importance
         st.write("#### Feature Importance (What drove this prediction?)")
         importance_df = pd.DataFrame({
-            'Feature': model_features,
+            'Feature': encoded_model_features,
             'Importance': clf.feature_importances_
         }).sort_values('Importance', ascending=True)
         fig_imp = px.bar(importance_df, x='Importance', y='Feature', orientation='h',
